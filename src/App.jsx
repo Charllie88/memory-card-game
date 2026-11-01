@@ -1,140 +1,229 @@
-import React, { useEffect, useState, useRef } from "react";
+import { useEffect, useReducer } from "react";
 
 const CARD_VALUES = [
-  "🐶",
-  "🐱",
-  "🦊",
-  "🐻",
-  "🐼",
-  "🦁",
-  "🐵",
-  "🐸",
+  { emoji: "🐶", name: "dog" },
+  { emoji: "🐱", name: "cat" },
+  { emoji: "🦊", name: "fox" },
+  { emoji: "🐻", name: "bear" },
+  { emoji: "🐼", name: "panda" },
+  { emoji: "🦁", name: "lion" },
+  { emoji: "🐵", name: "monkey" },
+  { emoji: "🐸", name: "frog" },
 ];
 
-function shuffleArray(arr) {
-  return arr
-    .map((v) => ({ v, r: Math.random() }))
-    .sort((a, b) => a.r - b.r)
-    .map((o) => o.v);
+function shuffleArray(items) {
+  const shuffled = [...items];
+
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[randomIndex]] = [
+      shuffled[randomIndex],
+      shuffled[index],
+    ];
+  }
+
+  return shuffled;
 }
 
 function generateDeck() {
-  const pairs = CARD_VALUES.slice(0, 8);
-  const deck = shuffleArray([...pairs, ...pairs]).map((value, idx) => ({
-    id: idx,
-    value,
-    flipped: false,
+  return shuffleArray([...CARD_VALUES, ...CARD_VALUES]).map((card, index) => ({
+    id: index,
+    ...card,
+    revealed: false,
     matched: false,
   }));
-  return deck;
 }
 
-function Card({ card, onClick }) {
+function createGame() {
+  return {
+    cards: generateDeck(),
+    selectedIds: [],
+    mismatchIds: [],
+    moves: 0,
+    time: 0,
+    started: false,
+    completed: false,
+    announcement: "Choose two cards to find a matching pair.",
+  };
+}
+
+function gameReducer(state, action) {
+  switch (action.type) {
+    case "reveal": {
+      if (state.completed || state.mismatchIds.length > 0) return state;
+
+      const card = state.cards.find((item) => item.id === action.id);
+      if (!card || card.revealed || card.matched) return state;
+
+      const revealedCards = state.cards.map((item) =>
+        item.id === action.id ? { ...item, revealed: true } : item
+      );
+      const started = true;
+
+      if (state.selectedIds.length === 0) {
+        return {
+          ...state,
+          cards: revealedCards,
+          selectedIds: [action.id],
+          started,
+          announcement: `${card.name} revealed. Choose another card.`,
+        };
+      }
+
+      const firstCard = state.cards.find(
+        (item) => item.id === state.selectedIds[0]
+      );
+      const moves = state.moves + 1;
+
+      if (firstCard.name === card.name) {
+        const cards = revealedCards.map((item) =>
+          item.id === firstCard.id || item.id === card.id
+            ? { ...item, matched: true }
+            : item
+        );
+        const completed = cards.every((item) => item.matched);
+
+        return {
+          ...state,
+          cards,
+          selectedIds: [],
+          moves,
+          started,
+          completed,
+          announcement: completed
+            ? `Match found. You won in ${moves} moves and ${formatTime(state.time)}!`
+            : `Match found: ${card.name}.`,
+        };
+      }
+
+      return {
+        ...state,
+        cards: revealedCards,
+        selectedIds: [...state.selectedIds, action.id],
+        mismatchIds: [firstCard.id, card.id],
+        moves,
+        started,
+        announcement: "No match. The cards will turn back over.",
+      };
+    }
+    case "hide-mismatch":
+      if (
+        action.ids.length !== state.mismatchIds.length ||
+        !action.ids.every((id) => state.mismatchIds.includes(id))
+      ) {
+        return state;
+      }
+
+      return {
+        ...state,
+        cards: state.cards.map((card) =>
+          action.ids.includes(card.id) ? { ...card, revealed: false } : card
+        ),
+        selectedIds: [],
+        mismatchIds: [],
+        announcement: "Cards turned back over. Choose another pair.",
+      };
+    case "tick":
+      if (!state.started || state.completed) return state;
+      return { ...state, time: state.time + 1 };
+    case "reset":
+      return action.game;
+    default:
+      return state;
+  }
+}
+
+function formatTime(seconds) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function Card({ card, disabled, onReveal }) {
+  const isRevealed = card.revealed || card.matched;
+
   return (
-    <div
-      className={`card ${card.flipped || card.matched ? "flipped" : ""}`}
-      onClick={() => onClick(card)}
+    <button
+      className={`card${isRevealed ? " flipped" : ""}${card.matched ? " matched" : ""}`}
+      type="button"
+      aria-label={`Card ${card.id + 1}, ${isRevealed ? card.name : "face down"}${card.matched ? ", matched" : ""}`}
+      aria-pressed={isRevealed}
+      disabled={disabled || card.matched}
+      onClick={() => onReveal(card.id)}
     >
-      <div className="inner">
-        <div className="front">{card.value}</div>
-        <div className="back">?</div>
-      </div>
-    </div>
+      <span className="inner" aria-hidden="true">
+        <span className="front">{card.emoji}</span>
+        <span className="back">?</span>
+      </span>
+    </button>
   );
 }
 
 export default function App() {
-  const [deck, setDeck] = useState(generateDeck);
-  const [first, setFirst] = useState(null);
-  const [second, setSecond] = useState(null);
-  const [moves, setMoves] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [time, setTime] = useState(0);
-  const timerRef = useRef(null);
+  const [game, dispatch] = useReducer(gameReducer, undefined, createGame);
+  const { cards, mismatchIds, moves, time, started, completed, announcement } =
+    game;
 
   useEffect(() => {
-    if (running) {
-      timerRef.current = setInterval(() => setTime((t) => t + 1), 1000);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [running]);
+    if (!started || completed) return undefined;
+
+    const timerId = window.setInterval(() => dispatch({ type: "tick" }), 1000);
+    return () => window.clearInterval(timerId);
+  }, [started, completed]);
 
   useEffect(() => {
-    if (first && second) {
-      setMoves((m) => m + 1);
-      if (first.value === second.value) {
-        setDeck((d) =>
-          d.map((c) =>
-            c.value === first.value ? { ...c, matched: true } : c
-          )
-        );
-        resetSelection();
-      } else {
-        setTimeout(() => {
-          setDeck((d) =>
-            d.map((c) =>
-              c.id === first.id || c.id === second.id
-                ? { ...c, flipped: false }
-                : c
-            )
-          );
-          resetSelection();
-        }, 800);
-      }
-    }
-  }, [first, second]);
+    if (mismatchIds.length === 0) return undefined;
 
-  useEffect(() => {
-    if (deck.every((c) => c.matched)) {
-      setRunning(false);
-    }
-  }, [deck]);
-
-  function handleCardClick(card) {
-    if (!running) setRunning(true);
-    if (card.flipped || card.matched) return;
-
-    setDeck((d) => d.map((c) => (c.id === card.id ? { ...c, flipped: true } : c)));
-
-    if (!first) setFirst(card);
-    else if (!second) setSecond(card);
-  }
-
-  function resetSelection() {
-    setFirst(null);
-    setSecond(null);
-  }
+    const timeoutId = window.setTimeout(
+      () => dispatch({ type: "hide-mismatch", ids: mismatchIds }),
+      800
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [mismatchIds]);
 
   function resetGame() {
-    clearInterval(timerRef.current);
-    setDeck(generateDeck());
-    setFirst(null);
-    setSecond(null);
-    setMoves(0);
-    setTime(0);
-    setRunning(false);
+    dispatch({ type: "reset", game: createGame() });
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>Memory Card Game</h1>
-        <div className="controls">
-          <div>Moves: {moves}</div>
-          <div>Time: {Math.floor(time / 60)}:{String(time % 60).padStart(2, "0")}</div>
-          <button onClick={resetGame}>Reset</button>
+    <main className="app">
+      <header className="game-header">
+        <div>
+          <p className="eyebrow">Match every pair</p>
+          <h1>Memory Card Game</h1>
         </div>
+        <button className="reset-button" type="button" onClick={resetGame}>
+          New game
+        </button>
       </header>
 
-      <div className="grid">
-        {deck.map((card) => (
-          <Card key={card.id} card={card} onClick={handleCardClick} />
-        ))}
-      </div>
+      <section className="stats" aria-label="Game statistics">
+        <div className="stat">
+          <span className="stat-label">Moves</span>
+          <span className="stat-value">{moves}</span>
+        </div>
+        <div className="stat">
+          <span className="stat-label">Time</span>
+          <span className="stat-value" role="timer" aria-label={`Elapsed time ${formatTime(time)}`}>
+            {formatTime(time)}
+          </span>
+        </div>
+      </section>
 
-      <footer>
-        <p>Flip cards to match pairs</p>
-      </footer>
-    </div>
+      <p className="game-status" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </p>
+
+      <section className="grid" role="group" aria-label="Memory cards">
+        {cards.map((card) => (
+          <Card
+            key={card.id}
+            card={card}
+            disabled={mismatchIds.length > 0 || completed}
+            onReveal={(id) => dispatch({ type: "reveal", id })}
+          />
+        ))}
+      </section>
+
+      <p className="game-hint">Choose two cards to find a matching pair.</p>
+    </main>
   );
 }
